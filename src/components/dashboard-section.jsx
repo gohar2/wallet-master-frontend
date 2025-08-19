@@ -1,11 +1,11 @@
-import React, { useEffect } from 'react';
-import { UserInfoCard } from './user-info-card';
-import { TokenTransferCard } from './token-transfer-card';
-import { BatchedActionsCard } from './batched-actions-card';
-import { LoadingSpinner } from '@/components/ui/loading-spinner';
-import { useAuth } from '@/contexts/auth-context';
-import { useWeb3 } from '@/contexts/web3-context';
-import { useToast } from '@/hooks/use-toast';
+import React, { useEffect } from "react";
+import { UserInfoCard } from "./user-info-card";
+import { TokenTransferCard } from "./token-transfer-card";
+import { BatchedActionsCard } from "./batched-actions-card";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { useAuth } from "@/contexts/auth-context";
+import { useWeb3 } from "@/contexts/web3-context";
+import { useToast } from "@/hooks/use-toast";
 
 export function DashboardSection() {
   const { user } = useAuth();
@@ -31,7 +31,9 @@ export function DashboardSection() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <LoadingSpinner className="mx-auto mb-4" size="lg" />
-          <p className="text-gray-600 font-medium">Creating your smart wallet...</p>
+          <p className="text-gray-600 font-medium">
+            Creating your smart wallet...
+          </p>
         </div>
       </div>
     );
@@ -40,7 +42,7 @@ export function DashboardSection() {
   return (
     <div className="space-y-6">
       <UserInfoCard />
-      
+
       <div className="grid lg:grid-cols-2 gap-6">
         <TokenTransferCard />
         <BatchedActionsCard />

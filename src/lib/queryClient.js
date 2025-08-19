@@ -27,7 +27,19 @@ export const queryClient = new QueryClient({
   },
 });
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+// Fixed API URL configuration for both localhost and 127.0.0.1
+const getApiUrl = () => {
+  // In development, use the proxy (recommended to avoid CORS issues)
+  if (import.meta.env.DEV) {
+    // Empty string uses the same origin, handled by Vite proxy
+    return "";
+  }
+
+  // In production or if you need direct calls
+  return import.meta.env.VITE_API_URL || "http://localhost:3001";
+};
+
+const API_BASE_URL = getApiUrl();
 
 // Enhanced error class for better error handling
 export class ApiError extends Error {
@@ -47,7 +59,7 @@ export async function apiRequest(method, url, data = null, options = {}) {
       "Content-Type": "application/json",
       ...options.headers,
     },
-    credentials: "include",
+    credentials: "include", // CRITICAL: Always include credentials for sessions
     ...options,
   };
 
@@ -63,10 +75,22 @@ export async function apiRequest(method, url, data = null, options = {}) {
     config.body = data; // data should be FormData object
   }
 
+  // Build full URL - handle both proxy and direct calls
   const fullUrl = url.startsWith("http") ? url : `${API_BASE_URL}${url}`;
+
+  console.log(`🔄 API Request: ${method} ${fullUrl}`, {
+    credentials: config.credentials,
+    origin: window.location.origin,
+    hasData: !!data,
+  });
 
   try {
     const response = await fetch(fullUrl, config);
+
+    console.log(`✅ API Response: ${response.status} ${response.statusText}`, {
+      url: fullUrl,
+      hasCookies: !!document.cookie,
+    });
 
     // Handle different response types
     let responseData;
@@ -88,6 +112,15 @@ export async function apiRequest(method, url, data = null, options = {}) {
     }
 
     if (!response.ok) {
+      // Enhanced error logging for debugging
+      console.error(`❌ API Error: ${response.status}`, {
+        url: fullUrl,
+        method,
+        status: response.status,
+        responseData,
+        origin: window.location.origin,
+      });
+
       // Create detailed error message
       const errorMessage =
         responseData?.message ||
@@ -107,23 +140,45 @@ export async function apiRequest(method, url, data = null, options = {}) {
       json: () => responseData,
     };
   } catch (error) {
+    // Enhanced error logging
+    console.error(`💥 API Request Failed:`, {
+      url: fullUrl,
+      method,
+      error: error.message,
+      type: error.name,
+      origin: window.location.origin,
+    });
+
     // Handle network errors and other fetch failures
     if (error instanceof ApiError) {
       throw error; // Re-throw API errors as-is
     }
 
-    // Handle network/CORS/fetch errors
-    if (error.name === "TypeError" && error.message.includes("fetch")) {
-      throw new ApiError(
-        "Network error: Unable to connect to the server. Please check your connection and try again.",
+    // Handle CORS errors specifically
+    if (
+      error.name === "TypeError" &&
+      (error.message.includes("fetch") ||
+        error.message.includes("CORS") ||
+        error.message.includes("Failed to fetch"))
+    ) {
+      const corsError = new ApiError(
+        `Network/CORS error: Unable to connect to the server. Please check your connection and CORS configuration. Origin: ${window.location.origin}`,
         0,
-        { originalError: error.message }
+        {
+          originalError: error.message,
+          origin: window.location.origin,
+          targetUrl: fullUrl,
+          advice: "If using 127.0.0.1, try localhost instead, or vice versa",
+        }
       );
+
+      throw corsError;
     }
 
     // Handle other errors
     throw new ApiError(`Request failed: ${error.message}`, 0, {
       originalError: error.message,
+      origin: window.location.origin,
     });
   }
 }
@@ -162,16 +217,30 @@ export function createMutation(mutationFn, options = {}) {
     onError: (error) => {
       console.error("Mutation error:", error);
 
-      // You can add global error handling here
+      // Enhanced error handling with debugging info
       if (error.status === 401) {
-        // Handle unauthorized - maybe redirect to login
-        console.warn("Unauthorized access - consider redirecting to login");
+        console.warn("🔒 Unauthorized access - session may have expired", {
+          origin: window.location.origin,
+          cookies: document.cookie ? "present" : "missing",
+        });
+
+        // Handle unauthorized - redirect to login
+        handleAuthError(error);
       } else if (error.status === 403) {
-        // Handle forbidden
-        console.warn("Access forbidden");
+        console.warn("🚫 Access forbidden - CORS or permissions issue", {
+          origin: window.location.origin,
+          error: error.response,
+        });
       } else if (error.status >= 500) {
-        // Handle server errors
-        console.error("Server error occurred");
+        console.error("🔥 Server error occurred", {
+          status: error.status,
+          message: error.message,
+        });
+      } else if (error.status === 0) {
+        console.error("🌐 Network/CORS error - check server and CORS config", {
+          origin: window.location.origin,
+          advice: error.response?.advice,
+        });
       }
 
       // Call custom error handler if provided
@@ -185,36 +254,93 @@ export function createMutation(mutationFn, options = {}) {
 
 // Example usage functions for your auth endpoints
 export const authApi = {
-  // Google login
-  googleLogin: (googleData) => api.post("/api/auth/google", googleData),
+  // Google login with enhanced error handling
+  googleLogin: (googleData) => {
+    console.log("🔐 Attempting Google login", {
+      hasAccessToken: !!googleData.access_token,
+      hasIdToken: !!googleData.id_token,
+      origin: window.location.origin,
+    });
+    return api.post("/api/auth/google", googleData);
+  },
 
-  // Regular login
-  login: (credentials) => api.post("/api/auth/login", credentials),
+  // Session validation
+  validateSession: () => {
+    console.log("🔍 Validating session", {
+      origin: window.location.origin,
+      cookies: document.cookie ? "present" : "missing",
+    });
+    return api.get("/api/auth/validate");
+  },
 
   // Logout
-  logout: () => api.post("/api/auth/logout"),
+  logout: () => {
+    console.log("👋 Logging out", {
+      origin: window.location.origin,
+    });
+    return api.post("/api/auth/logout");
+  },
 
   // Get current user
-  getCurrentUser: () => api.get("/api/auth/me"),
-
-  // Refresh token
-  refreshToken: () => api.post("/api/auth/refresh"),
+  getCurrentUser: () => {
+    console.log("👤 Getting current user", {
+      origin: window.location.origin,
+      cookies: document.cookie ? "present" : "missing",
+    });
+    return api.get("/api/auth/me");
+  },
 };
 
-// Utility function to handle authentication errors globally
+// Enhanced utility function to handle authentication errors globally
 export function handleAuthError(error) {
-  if (error.status === 401) {
+  console.error("🔒 Authentication error:", {
+    status: error.status,
+    message: error.message,
+    origin: window.location.origin,
+  });
+
+  if (error.status === 401 || error.status === 403) {
     // Clear any stored auth data
     localStorage.removeItem("google_id_token");
     localStorage.removeItem("google_access_token");
     localStorage.removeItem("google_user_info");
 
+    // Clear all React Query cache
+    queryClient.clear();
+
+    // Show user-friendly message
+    console.warn("Session expired. Please log in again.");
+
     // Redirect to login or show login modal
-    window.location.href = "/login";
+    // You might want to use your router instead of window.location
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
   }
 }
 
-// Request interceptor for adding auth tokens
+// Debug utility to check current session status
+export const debugSession = async () => {
+  console.log("🔍 Session Debug Info:", {
+    origin: window.location.origin,
+    hostname: window.location.hostname,
+    port: window.location.port,
+    cookies: document.cookie,
+    apiBaseUrl: API_BASE_URL,
+    isDev: import.meta.env.DEV,
+  });
+
+  try {
+    const response = await api.get("/api/auth/validate");
+    console.log("✅ Session is valid:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("❌ Session validation failed:", error);
+    return null;
+  }
+};
+
+// Request interceptor for adding auth tokens (if needed)
 export function addAuthToken(token) {
   queryClient.setMutationDefaults(["authenticated"], {
     mutationFn: async (variables) => {
@@ -233,11 +359,42 @@ export function addAuthToken(token) {
 // Response interceptor for handling common responses
 queryClient.setMutationDefaults(["auth"], {
   onSuccess: (data, variables, context) => {
+    console.log("✅ Auth mutation successful", { data });
     // Invalidate auth-related queries on successful auth mutations
     queryClient.invalidateQueries({ queryKey: ["user"] });
     queryClient.invalidateQueries({ queryKey: ["auth"] });
+    queryClient.invalidateQueries({ queryKey: ["session"] });
   },
-  onError: handleAuthError,
+  onError: (error) => {
+    console.error("❌ Auth mutation failed", { error });
+    handleAuthError(error);
+  },
 });
+
+// Utility to test API connectivity
+export const testApiConnection = async () => {
+  console.log("🧪 Testing API connection...");
+
+  try {
+    // Test if we can reach the health endpoint
+    const healthUrl = API_BASE_URL ? `${API_BASE_URL}/health` : "/health";
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      credentials: "include",
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log("✅ API connection successful:", data);
+      return { success: true, data };
+    } else {
+      console.error("❌ API health check failed:", response.status);
+      return { success: false, status: response.status };
+    }
+  } catch (error) {
+    console.error("💥 API connection test failed:", error);
+    return { success: false, error: error.message };
+  }
+};
 
 export default queryClient;

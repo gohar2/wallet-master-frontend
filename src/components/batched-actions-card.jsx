@@ -1,23 +1,23 @@
-import React, { useState } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { LoadingSpinner } from '@/components/ui/loading-spinner';
-import { Layers, CheckCircle } from 'lucide-react';
-import { useWeb3 } from '@/contexts/web3-context';
-import { useAuth } from '@/contexts/auth-context';
-import { useToast } from '@/hooks/use-toast';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiRequest } from '@/lib/queryClient';
+import React, { useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { Zap } from "lucide-react";
+import { useWeb3 } from "@/contexts/web3-context";
+import { useAuth } from "@/contexts/auth-context";
+import { useToast } from "@/hooks/use-toast";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 
 export function BatchedActionsCard() {
   const [formData, setFormData] = useState({
     recipient: "",
     amount: "",
   });
-  
-  const { sendBatchTransaction } = useWeb3();
+
+  const { sendBatchTransaction, isConnected } = useWeb3();
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -25,26 +25,38 @@ export function BatchedActionsCard() {
   const batchMutation = useMutation({
     mutationFn: async (data) => {
       if (!user) throw new Error("User not authenticated");
+      if (!isConnected)
+        throw new Error(
+          "Smart account not connected. Please wait for wallet creation to complete."
+        );
 
       // Create transaction record
-      const transactionResponse = await apiRequest("POST", "/api/transactions", {
-        userId: user.id,
-        type: "batch",
-        recipient: data.recipient,
-        amount: data.amount,
-        tokenSymbol: "USDC",
-        batchOperations: [
-          { type: "approve", amount: data.amount },
-          { type: "transfer", recipient: data.recipient, amount: data.amount },
-        ],
-      });
-      
-      const transaction = await transactionResponse.json();
+      const transactionResponse = await apiRequest(
+        "POST",
+        "/api/transactions",
+        {
+          userId: user.id,
+          type: "batch",
+          recipient: data.recipient,
+          amount: data.amount,
+          tokenSymbol: "USDC",
+          batchOperations: [
+            { type: "approve", amount: data.amount },
+            {
+              type: "transfer",
+              recipient: data.recipient,
+              amount: data.amount,
+            },
+          ],
+        }
+      );
+
+      const transaction = transactionResponse.data;
 
       try {
         // Send batch transaction
         const txHash = await sendBatchTransaction(data.recipient, data.amount);
-        
+
         // Update transaction with success
         await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
           status: "success",
@@ -56,7 +68,8 @@ export function BatchedActionsCard() {
         // Update transaction with failure
         await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
           status: "failed",
-          errorMessage: error instanceof Error ? error.message : "Batch transaction failed",
+          errorMessage:
+            error instanceof Error ? error.message : "Batch transaction failed",
         });
         throw error;
       }
@@ -67,12 +80,15 @@ export function BatchedActionsCard() {
         description: "Your approve + transfer batch has been completed.",
       });
       setFormData({ recipient: "", amount: "" });
-      queryClient.invalidateQueries({ queryKey: ["/api/users", user?.id, "transactions"] });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/users", user?.id, "transactions"],
+      });
     },
     onError: (error) => {
       toast({
         title: "Batch operation failed",
-        description: error instanceof Error ? error.message : "Please try again.",
+        description:
+          error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
     },
@@ -80,7 +96,7 @@ export function BatchedActionsCard() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    
+
     if (!formData.recipient || !formData.amount) {
       toast({
         title: "Invalid input",
@@ -90,11 +106,20 @@ export function BatchedActionsCard() {
       return;
     }
 
+    if (!isConnected) {
+      toast({
+        title: "Wallet not ready",
+        description: "Please wait for your smart wallet to be created.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     batchMutation.mutate(formData);
   };
 
   const handleInputChange = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
   return (
@@ -102,21 +127,28 @@ export function BatchedActionsCard() {
       <CardContent className="p-6">
         <div className="flex items-center space-x-3 mb-6">
           <div className="w-10 h-10 bg-accent rounded-lg flex items-center justify-center">
-            <Layers className="text-white w-5 h-5" />
+            <Zap className="text-white w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">Batch Operations</h3>
-            <p className="text-sm text-gray-600">Approve + Transfer in one transaction</p>
+            <h3 className="text-lg font-semibold text-gray-900">
+              Batch Operations
+            </h3>
+            <p className="text-sm text-gray-600">
+              Approve + Transfer in one transaction
+            </p>
           </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <Label htmlFor="batchRecipient" className="text-sm font-medium text-gray-700 mb-2">
+            <Label
+              htmlFor="batchRecipientAddress"
+              className="text-sm font-medium text-gray-700 mb-2"
+            >
               Recipient Address
             </Label>
             <Input
-              id="batchRecipient"
+              id="batchRecipientAddress"
               type="text"
               placeholder="0x..."
               value={formData.recipient}
@@ -125,9 +157,12 @@ export function BatchedActionsCard() {
               disabled={batchMutation.isPending}
             />
           </div>
-          
+
           <div>
-            <Label htmlFor="batchAmount" className="text-sm font-medium text-gray-700 mb-2">
+            <Label
+              htmlFor="batchAmount"
+              className="text-sm font-medium text-gray-700 mb-2"
+            >
               Amount (USDC)
             </Label>
             <div className="relative">
@@ -147,30 +182,18 @@ export function BatchedActionsCard() {
             </div>
           </div>
 
-          <div className="bg-gray-50 rounded-lg p-3">
-            <h4 className="text-sm font-medium text-gray-700 mb-2">Batch Operations:</h4>
-            <div className="space-y-1 text-sm text-gray-600">
-              <div className="flex items-center space-x-2">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span>1. Approve token spending</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span>2. Transfer tokens</span>
-              </div>
-            </div>
-          </div>
-
           <Button
             type="submit"
-            disabled={batchMutation.isPending}
-            className="w-full bg-accent hover:bg-purple-700 text-white font-medium"
+            disabled={batchMutation.isPending || !isConnected}
+            className="w-full bg-accent hover:bg-accent-dark text-white font-medium"
           >
             {batchMutation.isPending ? (
               <>
                 <LoadingSpinner className="mr-2" size="sm" />
                 Executing Batch...
               </>
+            ) : !isConnected ? (
+              "Connecting Wallet..."
             ) : (
               "Execute Batch"
             )}

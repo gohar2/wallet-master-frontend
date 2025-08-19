@@ -1,23 +1,23 @@
-import React, { useState } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { LoadingSpinner } from '@/components/ui/loading-spinner';
-import { Send } from 'lucide-react';
-import { useWeb3 } from '@/contexts/web3-context';
-import { useAuth } from '@/contexts/auth-context';
-import { useToast } from '@/hooks/use-toast';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiRequest } from '@/lib/queryClient';
+import React, { useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { Send } from "lucide-react";
+import { useWeb3 } from "@/contexts/web3-context";
+import { useAuth } from "@/contexts/auth-context";
+import { useToast } from "@/hooks/use-toast";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 
 export function TokenTransferCard() {
   const [formData, setFormData] = useState({
     recipient: "",
     amount: "",
   });
-  
-  const { sendGaslessTransaction } = useWeb3();
+
+  const { sendGaslessTransaction, isConnected } = useWeb3();
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -25,22 +25,33 @@ export function TokenTransferCard() {
   const transferMutation = useMutation({
     mutationFn: async (data) => {
       if (!user) throw new Error("User not authenticated");
+      if (!isConnected)
+        throw new Error(
+          "Smart account not connected. Please wait for wallet creation to complete."
+        );
 
       // Create transaction record
-      const transactionResponse = await apiRequest("POST", "/api/transactions", {
-        userId: user.id,
-        type: "transfer",
-        recipient: data.recipient,
-        amount: data.amount,
-        tokenSymbol: "USDC",
-      });
-      
-      const transaction = await transactionResponse.json();
+      const transactionResponse = await apiRequest(
+        "POST",
+        "/api/transactions",
+        {
+          userId: user.id,
+          type: "transfer",
+          recipient: data.recipient,
+          amount: data.amount,
+          tokenSymbol: "USDC",
+        }
+      );
+
+      const transaction = transactionResponse.data;
 
       try {
         // Send gasless transaction
-        const txHash = await sendGaslessTransaction(data.recipient, data.amount);
-        
+        const txHash = await sendGaslessTransaction(
+          data.recipient,
+          data.amount
+        );
+
         // Update transaction with success
         await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
           status: "success",
@@ -52,7 +63,8 @@ export function TokenTransferCard() {
         // Update transaction with failure
         await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
           status: "failed",
-          errorMessage: error instanceof Error ? error.message : "Transaction failed",
+          errorMessage:
+            error instanceof Error ? error.message : "Transaction failed",
         });
         throw error;
       }
@@ -63,12 +75,15 @@ export function TokenTransferCard() {
         description: "Your gasless USDC transfer has been completed.",
       });
       setFormData({ recipient: "", amount: "" });
-      queryClient.invalidateQueries({ queryKey: ["/api/users", user?.id, "transactions"] });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/users", user?.id, "transactions"],
+      });
     },
     onError: (error) => {
       toast({
         title: "Transfer failed",
-        description: error instanceof Error ? error.message : "Please try again.",
+        description:
+          error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
     },
@@ -76,7 +91,7 @@ export function TokenTransferCard() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    
+
     if (!formData.recipient || !formData.amount) {
       toast({
         title: "Invalid input",
@@ -86,11 +101,20 @@ export function TokenTransferCard() {
       return;
     }
 
+    if (!isConnected) {
+      toast({
+        title: "Wallet not ready",
+        description: "Please wait for your smart wallet to be created.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     transferMutation.mutate(formData);
   };
 
   const handleInputChange = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
   return (
@@ -101,14 +125,21 @@ export function TokenTransferCard() {
             <Send className="text-white w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">Gasless Transfer</h3>
-            <p className="text-sm text-gray-600">Send USDC without paying gas fees</p>
+            <h3 className="text-lg font-semibold text-gray-900">
+              Gasless Transfer
+            </h3>
+            <p className="text-sm text-gray-600">
+              Send USDC without paying gas fees
+            </p>
           </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <Label htmlFor="recipientAddress" className="text-sm font-medium text-gray-700 mb-2">
+            <Label
+              htmlFor="recipientAddress"
+              className="text-sm font-medium text-gray-700 mb-2"
+            >
               Recipient Address
             </Label>
             <Input
@@ -121,9 +152,12 @@ export function TokenTransferCard() {
               disabled={transferMutation.isPending}
             />
           </div>
-          
+
           <div>
-            <Label htmlFor="transferAmount" className="text-sm font-medium text-gray-700 mb-2">
+            <Label
+              htmlFor="transferAmount"
+              className="text-sm font-medium text-gray-700 mb-2"
+            >
               Amount (USDC)
             </Label>
             <div className="relative">
@@ -145,7 +179,7 @@ export function TokenTransferCard() {
 
           <Button
             type="submit"
-            disabled={transferMutation.isPending}
+            disabled={transferMutation.isPending || !isConnected}
             className="w-full bg-primary hover:bg-primary-dark text-white font-medium"
           >
             {transferMutation.isPending ? (
@@ -153,6 +187,8 @@ export function TokenTransferCard() {
                 <LoadingSpinner className="mr-2" size="sm" />
                 Sending Transfer...
               </>
+            ) : !isConnected ? (
+              "Connecting Wallet..."
             ) : (
               "Send Transfer"
             )}

@@ -103,12 +103,9 @@ export class GoogleAuth {
               // Get user info using the access token
               const userInfo = await this.getUserInfo(response.access_token);
 
-              // Create ID token by calling Google's tokeninfo endpoint
-              const idToken = await this.getIdToken(response.access_token);
-
               const authResponse = {
                 access_token: response.access_token,
-                id_token: idToken,
+                id_token: null,
                 token_type: response.token_type || "Bearer",
                 expires_in: response.expires_in,
                 scope: response.scope,
@@ -120,9 +117,7 @@ export class GoogleAuth {
                 "google_access_token",
                 response.access_token
               );
-              if (idToken) {
-                localStorage.setItem("google_id_token", idToken);
-              }
+              // No extra tokeninfo call; id_token is not required for backend
               localStorage.setItem(
                 "google_user_info",
                 JSON.stringify(userInfo)
@@ -160,10 +155,9 @@ export class GoogleAuth {
           },
         });
 
-        // Request access token
-        client.requestAccessToken({
-          prompt: "consent", // Force consent screen to ensure we get refresh token
-        });
+        // Request access token without forcing consent each time.
+        // This avoids extra screens and flicker, while still allowing 2FA when required by Google.
+        client.requestAccessToken();
       });
     } catch (error) {
       console.error("Error in signIn:", error);
@@ -216,28 +210,7 @@ export class GoogleAuth {
     }
   }
 
-  async getIdToken(accessToken) {
-    try {
-      // Use Google's tokeninfo endpoint to get token details
-      const response = await fetch(
-        `https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${accessToken}`
-      );
-
-      if (!response.ok) {
-        console.warn("Could not fetch token info for ID token");
-        return null;
-      }
-
-      const tokenInfo = await response.json();
-
-      // For OAuth2 flow, we might not get an ID token directly
-      // In this case, the access token serves as our authentication proof
-      return tokenInfo.id_token || null;
-    } catch (error) {
-      console.warn("Error getting ID token:", error);
-      return null;
-    }
-  }
+  // Removed getIdToken to avoid extra network roundtrips that cause UI jitter during 2FA
 
   signOut() {
     try {

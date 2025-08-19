@@ -26,19 +26,18 @@ export function AuthProvider({ children }) {
     (async () => {
       try {
         const response = await apiRequest("GET", "/api/auth/validate");
-        if (response.ok) {
-          const data = await response.json();
-          if (data?.user) {
-            setUser(data.user);
-            localStorage.setItem("user", JSON.stringify(data.user));
-          }
+        const data = response.data;
+        if (data?.user) {
+          setUser(data.user);
+          localStorage.setItem("user", JSON.stringify(data.user));
         } else {
-          // If cookie invalid, clear any stale local state
           setUser(null);
           localStorage.removeItem("user");
         }
       } catch (e) {
-        // Network issues should not block app load
+        // Network or 401/403 cause apiRequest to throw
+        setUser(null);
+        localStorage.removeItem("user");
         console.warn("Auth validate failed:", e);
       } finally {
         setIsLoading(false);
@@ -65,7 +64,7 @@ export function AuthProvider({ children }) {
         requestData
       );
 
-      const userData = await response.json();
+      const userData = response.data;
       setUser(userData);
       localStorage.setItem("user", JSON.stringify(userData));
       return userData;
@@ -234,7 +233,7 @@ export function AuthProvider({ children }) {
         }
       );
 
-      const updatedUser = await response.json();
+      const updatedUser = response.data;
       setUser(updatedUser);
       localStorage.setItem("user", JSON.stringify(updatedUser));
       return updatedUser;
@@ -268,8 +267,8 @@ export function AuthProvider({ children }) {
     if (!user) return false;
 
     try {
-      const response = await apiRequest("GET", "/api/auth/validate");
-      return response.ok;
+      await apiRequest("GET", "/api/auth/validate");
+      return true;
     } catch (error) {
       console.warn("Session validation failed:", error);
       // If validation fails, clear user data
@@ -280,11 +279,9 @@ export function AuthProvider({ children }) {
 
   // Refresh user data from server
   const refreshUser = async () => {
-    if (!user) return null;
-
     try {
-      const response = await apiRequest("GET", `/api/users/${user.id}`);
-      const updatedUser = await response.json();
+      const response = await apiRequest("GET", `/api/auth/me`);
+      const updatedUser = response.data;
       setUser(updatedUser);
       localStorage.setItem("user", JSON.stringify(updatedUser));
       return updatedUser;

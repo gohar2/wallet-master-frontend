@@ -21,7 +21,29 @@ export function AuthProvider({ children }) {
         localStorage.removeItem("user");
       }
     }
-    setIsLoading(false);
+
+    // Validate cookie-based session with the server
+    (async () => {
+      try {
+        const response = await apiRequest("GET", "/api/auth/validate");
+        if (response.ok) {
+          const data = await response.json();
+          if (data?.user) {
+            setUser(data.user);
+            localStorage.setItem("user", JSON.stringify(data.user));
+          }
+        } else {
+          // If cookie invalid, clear any stale local state
+          setUser(null);
+          localStorage.removeItem("user");
+        }
+      } catch (e) {
+        // Network issues should not block app load
+        console.warn("Auth validate failed:", e);
+      } finally {
+        setIsLoading(false);
+      }
+    })();
   }, []);
 
   const login = async (accessToken, idToken) => {
@@ -175,12 +197,18 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
     // Revoke Google token if possible and clear all local storage
     try {
       googleAuth.signOut();
     } catch (e) {
       console.warn("googleAuth signOut failed:", e);
+    }
+
+    try {
+      await apiRequest("POST", "/api/auth/logout");
+    } catch (e) {
+      console.warn("Server logout failed:", e);
     }
 
     setUser(null);
@@ -245,7 +273,7 @@ export function AuthProvider({ children }) {
     } catch (error) {
       console.warn("Session validation failed:", error);
       // If validation fails, clear user data
-      logout();
+      await logout();
       return false;
     }
   };
@@ -263,7 +291,7 @@ export function AuthProvider({ children }) {
     } catch (error) {
       console.error("Failed to refresh user data:", error);
       if (error.message.includes("HTTP 401")) {
-        logout();
+        await logout();
       }
       throw error;
     }

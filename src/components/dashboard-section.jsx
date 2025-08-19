@@ -9,22 +9,36 @@ import { useToast } from "@/hooks/use-toast";
 
 export function DashboardSection() {
   const { user } = useAuth();
-  const { connect, isConnecting, isConnected } = useWeb3();
+  const { connect, isConnecting, isConnected, authErrorHandled } = useWeb3();
   const { toast } = useToast();
 
   useEffect(() => {
+    // Prevent auto-connect if there's an authentication error being handled
+    if (authErrorHandled) {
+      console.log("Skipping auto-connect due to authentication error");
+      return;
+    }
+
     // Auto-connect smart wallet if user doesn't have one
     if (user && !user.walletAddress && !isConnected && !isConnecting) {
       connect().catch((error) => {
         console.error("Auto-connect failed:", error);
-        toast({
-          title: "Wallet creation failed",
-          description: "Could not create smart wallet. Please try again.",
-          variant: "destructive",
-        });
+
+        // Only show toast if it's not an authentication error
+        if (
+          !error.message.includes("HTTP 401") &&
+          !error.message.includes("Session expired") &&
+          !error.message.includes("Authentication error being handled")
+        ) {
+          toast({
+            title: "Wallet creation failed",
+            description: "Could not create smart wallet. Please try again.",
+            variant: "destructive",
+          });
+        }
       });
     }
-  }, [user, isConnected, isConnecting, connect, toast]);
+  }, [user, isConnected, isConnecting, connect, toast, authErrorHandled]);
 
   if (isConnecting) {
     return (

@@ -1,7 +1,13 @@
 // @/contexts/auth-context.jsx
 
-import React, { createContext, useContext, useState, useEffect } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+} from "react";
+import { apiRequest, resetAuthErrorHandling } from "@/lib/queryClient";
 import { googleAuth } from "@/lib/google-auth";
 
 const AuthContext = createContext(undefined);
@@ -9,6 +15,8 @@ const AuthContext = createContext(undefined);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isHandlingAuthError, setIsHandlingAuthError] = useState(false);
+  const authErrorHandledRef = useRef(false);
 
   useEffect(() => {
     // Check for existing auth state in localStorage
@@ -48,6 +56,11 @@ export function AuthProvider({ children }) {
   const login = async (accessToken, idToken) => {
     setIsLoading(true);
     try {
+      // Reset auth error handling flags on successful login
+      resetAuthErrorHandling();
+      setIsHandlingAuthError(false);
+      authErrorHandledRef.current = false;
+
       // Prepare the request payload
       const requestData = {
         access_token: accessToken,
@@ -139,26 +152,15 @@ export function AuthProvider({ children }) {
                 break;
               default:
                 // Try to extract error message from response body
-                const errorParts = error.message.split(":");
-                if (errorParts.length > 1) {
-                  const errorBody = errorParts[errorParts.length - 1].trim();
-                  try {
-                    const parsedError = JSON.parse(errorBody);
-                    if (parsedError.message) {
-                      enhancedError = new Error(parsedError.message);
-                      enhancedError.errorCode = parsedError.error;
-                      enhancedError.errorDetails = parsedError.details;
-                    }
-                  } catch (parseError) {
-                    // If we can't parse the error body, use a generic message
-                    enhancedError = new Error(
-                      "Authentication failed. Please try again."
-                    );
-                  }
+                if (error.response && error.response.message) {
+                  enhancedError = new Error(error.response.message);
+                } else {
+                  enhancedError = new Error(
+                    "Authentication failed. Please try again."
+                  );
                 }
             }
           } catch (parseError) {
-            console.warn("Error parsing HTTP error response:", parseError);
             enhancedError = new Error(
               "Authentication failed. Please try again."
             );
@@ -196,33 +198,15 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const logout = async () => {
-    // Revoke Google token if possible and clear all local storage
-    try {
-      googleAuth.signOut();
-    } catch (e) {
-      console.warn("googleAuth signOut failed:", e);
-    }
-
-    try {
-      await apiRequest("POST", "/api/auth/logout");
-    } catch (e) {
-      console.warn("Server logout failed:", e);
-    }
-
-    setUser(null);
-    try {
-      localStorage.clear();
-    } catch (e) {
-      console.warn("localStorage.clear failed:", e);
-    }
-
-    // Optional: Redirect to home page after logout
-    // window.location.href = '/';
-  };
-
   const updateUserWallet = async (walletAddress) => {
     if (!user) throw new Error("No user logged in");
+
+    // Prevent recursive calls if we're already handling an auth error
+    if (isHandlingAuthError || authErrorHandledRef.current) {
+      throw new Error(
+        "Authentication error being handled. Please log in again."
+      );
+    }
 
     try {
       const response = await apiRequest(
@@ -246,6 +230,24 @@ export function AuthProvider({ children }) {
       } else if (error.message.includes("HTTP 400")) {
         throw new Error("Invalid wallet address. Please check and try again.");
       } else if (error.message.includes("HTTP 401")) {
+        // Set flag to prevent recursive calls
+        setIsHandlingAuthError(true);
+        authErrorHandledRef.current = true;
+
+        // Clear user data and redirect to login
+        setUser(null);
+        localStorage.removeItem("user");
+
+        // Show user-friendly message and redirect
+        console.warn("Session expired. Redirecting to login...");
+
+        // Use setTimeout to ensure state updates are processed before redirect
+        setTimeout(() => {
+          if (window.location.pathname !== "/login") {
+            window.location.href = "/login";
+          }
+        }, 100);
+
         throw new Error("Session expired. Please log in again.");
       } else if (error.message.includes("HTTP 403")) {
         throw new Error("You don't have permission to update this wallet.");
@@ -266,6 +268,11 @@ export function AuthProvider({ children }) {
   const validateSession = async () => {
     if (!user) return false;
 
+    // Prevent recursive calls if we're already handling an auth error
+    if (isHandlingAuthError || authErrorHandledRef.current) {
+      return false;
+    }
+
     try {
       await apiRequest("GET", "/api/auth/validate");
       return true;
@@ -279,6 +286,13 @@ export function AuthProvider({ children }) {
 
   // Refresh user data from server
   const refreshUser = async () => {
+    // Prevent recursive calls if we're already handling an auth error
+    if (isHandlingAuthError || authErrorHandledRef.current) {
+      throw new Error(
+        "Authentication error being handled. Please log in again."
+      );
+    }
+
     try {
       const response = await apiRequest("GET", `/api/auth/me`);
       const updatedUser = response.data;
@@ -288,10 +302,40 @@ export function AuthProvider({ children }) {
     } catch (error) {
       console.error("Failed to refresh user data:", error);
       if (error.message.includes("HTTP 401")) {
+        // Set flag to prevent recursive calls
+        setIsHandlingAuthError(true);
+        authErrorHandledRef.current = true;
         await logout();
       }
       throw error;
     }
+  };
+
+  const logout = async () => {
+    // Revoke Google token if possible and clear all local storage
+    try {
+      googleAuth.signOut();
+    } catch (e) {
+      console.warn("googleAuth signOut failed:", e);
+    }
+
+    try {
+      await apiRequest("POST", "/api/auth/logout");
+    } catch (e) {
+      console.warn("Server logout failed:", e);
+    }
+
+    setUser(null);
+    setIsHandlingAuthError(false);
+    authErrorHandledRef.current = false;
+    try {
+      localStorage.clear();
+    } catch (e) {
+      console.warn("localStorage.clear failed:", e);
+    }
+
+    // Optional: Redirect to home page after logout
+    // window.location.href = '/';
   };
 
   return (

@@ -292,7 +292,15 @@ export const authApi = {
 };
 
 // Enhanced utility function to handle authentication errors globally
+let isHandlingAuthError = false;
+
 export function handleAuthError(error) {
+  // Prevent recursive calls if we're already handling an auth error
+  if (isHandlingAuthError) {
+    console.log("Auth error already being handled, skipping...");
+    return;
+  }
+
   console.error("🔒 Authentication error:", {
     status: error.status,
     message: error.message,
@@ -300,6 +308,9 @@ export function handleAuthError(error) {
   });
 
   if (error.status === 401 || error.status === 403) {
+    // Set flag to prevent recursive calls
+    isHandlingAuthError = true;
+
     // Clear any stored auth data
     localStorage.removeItem("google_id_token");
     localStorage.removeItem("google_access_token");
@@ -314,9 +325,18 @@ export function handleAuthError(error) {
     // Redirect to login or show login modal
     // You might want to use your router instead of window.location
     if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
+      // Use setTimeout to ensure all state updates are processed before redirect
+      setTimeout(() => {
+        window.location.href = "/login";
+      }, 100);
     }
   }
+}
+
+// Utility function to reset auth error handling flags
+export function resetAuthErrorHandling() {
+  isHandlingAuthError = false;
+  console.log("Auth error handling flags reset");
 }
 
 // Debug utility to check current session status

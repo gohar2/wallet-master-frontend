@@ -1,71 +1,50 @@
 // @/lib/google-auth.js
 
+import { safariUtils } from "@/lib/safari-compatibility";
+
 export class GoogleAuth {
   constructor() {
     this.clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
-    this.redirectUri =
-      import.meta.env.VITE_GOOGLE_REDIRECT_URI ||
-      `${window.location.origin}/auth/callback`;
-
-    if (!this.clientId) {
-      console.warn("Google Client ID not configured");
-    }
-
-    this.isInitialized = false;
     this.initializationPromise = null;
   }
 
-  async loadGoogleScript() {
-    return new Promise((resolve, reject) => {
-      if (window.google && window.google.accounts) {
+  async initializeGoogleIdentity() {
+    if (this.initializationPromise) {
+      return this.initializationPromise;
+    }
+
+    this.initializationPromise = new Promise((resolve, reject) => {
+      // Check if Google Identity Services is already loaded
+      if (
+        window.google &&
+        window.google.accounts &&
+        window.google.accounts.oauth2
+      ) {
         resolve();
         return;
       }
 
-      const existingScript = document.querySelector(
-        'script[src="https://accounts.google.com/gsi/client"]'
-      );
-      if (existingScript) {
-        existingScript.addEventListener("load", resolve);
-        existingScript.addEventListener("error", () =>
-          reject(new Error("Failed to load Google Identity Services"))
-        );
+      // For Safari, wait for Google Identity Services to load
+      if (safariUtils.isSafari()) {
+        safariUtils.googleAuth.waitForGoogle().then(resolve).catch(reject);
         return;
       }
 
-      const script = document.createElement("script");
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.defer = true;
-
-      script.onload = () => setTimeout(resolve, 100);
-      script.onerror = () =>
-        reject(new Error("Failed to load Google Identity Services"));
-
-      document.head.appendChild(script);
-    });
-  }
-
-  async initializeGoogleIdentity() {
-    if (this.isInitialized) return;
-    if (this.initializationPromise) return this.initializationPromise;
-
-    this.initializationPromise = (async () => {
-      try {
-        await this.loadGoogleScript();
-
-        if (!window.google || !window.google.accounts) {
-          throw new Error(
-            "Google Identity Services not available after loading"
-          );
+      // For other browsers, wait for the script to load
+      const checkGoogle = () => {
+        if (
+          window.google &&
+          window.google.accounts &&
+          window.google.accounts.oauth2
+        ) {
+          resolve();
+        } else {
+          setTimeout(checkGoogle, 100);
         }
+      };
 
-        this.isInitialized = true;
-      } catch (error) {
-        this.initializationPromise = null;
-        throw error;
-      }
-    })();
+      checkGoogle();
+    });
 
     return this.initializationPromise;
   }
@@ -112,13 +91,12 @@ export class GoogleAuth {
                 user: userInfo,
               };
 
-              // Store tokens
-              localStorage.setItem(
+              // Store tokens (Safari-compatible)
+              safariUtils.safeLocalStorage.setItem(
                 "google_access_token",
                 response.access_token
               );
-              // No extra tokeninfo call; id_token is not required for backend
-              localStorage.setItem(
+              safariUtils.safeLocalStorage.setItem(
                 "google_user_info",
                 JSON.stringify(userInfo)
               );
@@ -180,7 +158,7 @@ export class GoogleAuth {
   async getUserInfo(accessToken) {
     try {
       const response = await fetch(
-        "https://www.googleapis.com/oauth2/v2/userinfo",
+        `https://www.googleapis.com/oauth2/v2/userinfo?access_token=${accessToken}`,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -193,67 +171,68 @@ export class GoogleAuth {
       }
 
       const userInfo = await response.json();
-
-      return {
-        id: userInfo.id,
-        email: userInfo.email,
-        name: userInfo.name || "Unknown User",
-        picture: userInfo.picture || "",
-        verified_email: userInfo.verified_email || false,
-        given_name: userInfo.given_name,
-        family_name: userInfo.family_name,
-        locale: userInfo.locale,
-      };
+      return userInfo;
     } catch (error) {
       console.error("Error fetching user info:", error);
-      throw new Error("Failed to fetch user information");
+      throw new Error("Failed to get user information from Google");
     }
   }
 
-  // Removed getIdToken to avoid extra network roundtrips that cause UI jitter during 2FA
-
-  signOut() {
+  async signOut() {
     try {
-      // Revoke the token if available
-      const accessToken = localStorage.getItem("google_access_token");
-      if (accessToken && window.google?.accounts?.oauth2) {
-        window.google.accounts.oauth2.revoke(accessToken, () => {
-          console.log("Token revoked");
-        });
+      // Clear stored tokens (Safari-compatible)
+      safariUtils.safeLocalStorage.removeItem("google_access_token");
+      safariUtils.safeLocalStorage.removeItem("google_id_token");
+      safariUtils.safeLocalStorage.removeItem("google_user_info");
+
+      // Revoke the token if we have one
+      const accessToken = safariUtils.safeLocalStorage.getItem(
+        "google_access_token"
+      );
+      if (accessToken) {
+        try {
+          await fetch(
+            `https://oauth2.googleapis.com/revoke?token=${accessToken}`,
+            {
+              method: "POST",
+            }
+          );
+        } catch (error) {
+          console.warn("Failed to revoke Google token:", error);
+        }
       }
+
+      console.log("Successfully signed out of Google");
     } catch (error) {
-      console.warn("Error revoking token:", error);
+      console.error("Error during Google sign out:", error);
+      throw new Error("Failed to sign out of Google");
     }
-
-    // Clear stored data
-    localStorage.removeItem("google_access_token");
-    localStorage.removeItem("google_id_token");
-    localStorage.removeItem("google_user_info");
   }
 
+  // Check if user is currently signed in
   isSignedIn() {
-    const token = localStorage.getItem("google_access_token");
-    return !!token;
+    try {
+      const accessToken = safariUtils.safeLocalStorage.getItem(
+        "google_access_token"
+      );
+      return !!accessToken;
+    } catch (error) {
+      console.warn("Error checking sign-in status:", error);
+      return false;
+    }
   }
 
+  // Get current user info
   getCurrentUser() {
     try {
-      const userInfo = localStorage.getItem("google_user_info");
+      const userInfo = safariUtils.safeLocalStorage.getItem("google_user_info");
       return userInfo ? JSON.parse(userInfo) : null;
     } catch (error) {
-      console.error("Error getting current user:", error);
+      console.warn("Error getting current user:", error);
       return null;
     }
   }
-
-  getAccessToken() {
-    return localStorage.getItem("google_access_token");
-  }
-
-  getIdToken() {
-    return localStorage.getItem("google_id_token");
-  }
 }
 
-// Create and export a singleton instance
+// Create a singleton instance
 export const googleAuth = new GoogleAuth();

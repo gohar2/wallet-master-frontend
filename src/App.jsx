@@ -5,6 +5,7 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { AuthProvider } from "@/contexts/auth-context";
 import { Web3Provider } from "@/contexts/web3-context";
+import SafariDebug from "@/components/safari-debug";
 import Home from "@/pages/home";
 import NotFound from "@/pages/not-found";
 
@@ -24,6 +25,7 @@ function App() {
         <Web3Provider>
           <Toaster />
           <Router />
+          <SafariDebug />
         </Web3Provider>
       </AuthProvider>
     </QueryClientProvider>

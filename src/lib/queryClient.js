@@ -1,4 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
+import { safariUtils } from "@/lib/safari-compatibility";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -51,7 +52,87 @@ export class ApiError extends Error {
   }
 }
 
+// Enhanced utility function to handle authentication errors globally
+let isHandlingAuthError = false;
+let authErrorRedirectTimeout = null;
+
+export function handleAuthError(error) {
+  // Prevent recursive calls if we're already handling an auth error
+  if (isHandlingAuthError) {
+    console.log("🔄 Auth error already being handled, skipping...");
+    return;
+  }
+
+  console.error("🔒 Authentication error:", {
+    status: error.status,
+    message: error.message,
+    origin: window.location.origin,
+    isSafari: safariUtils.isSafari(),
+  });
+
+  if (error.status === 401 || error.status === 403) {
+    // Set flag to prevent recursive calls immediately
+    isHandlingAuthError = true;
+
+    // Clear any existing timeout to prevent multiple redirects
+    if (authErrorRedirectTimeout) {
+      clearTimeout(authErrorRedirectTimeout);
+    }
+
+    // Clear any stored auth data (Safari-compatible)
+    try {
+      safariUtils.safeLocalStorage.removeItem("google_id_token");
+      safariUtils.safeLocalStorage.removeItem("google_access_token");
+      safariUtils.safeLocalStorage.removeItem("google_user_info");
+      safariUtils.safeLocalStorage.removeItem("user");
+    } catch (e) {
+      console.warn("Failed to clear some auth data:", e);
+    }
+
+    // Clear all React Query cache to prevent further API calls
+    try {
+      queryClient.clear();
+    } catch (e) {
+      console.warn("Failed to clear query cache:", e);
+    }
+
+    // Show user-friendly message
+    console.warn("🔒 Session expired. Redirecting to login...");
+
+    // Immediately redirect to login page (Safari-compatible)
+    if (window.location.pathname !== "/login") {
+      // Use a single timeout to ensure we only redirect once
+      authErrorRedirectTimeout = setTimeout(() => {
+        try {
+          localStorage.clear();
+        } catch (e) {
+          console.error("Failed to redirect to login:", e);
+          // Fallback to direct navigation
+          localStorage.clear();
+        }
+      }, 50); // Reduced timeout for faster response
+    }
+  }
+}
+
+// Utility function to reset auth error handling flags
+export function resetAuthErrorHandling() {
+  isHandlingAuthError = false;
+  if (authErrorRedirectTimeout) {
+    clearTimeout(authErrorRedirectTimeout);
+    authErrorRedirectTimeout = null;
+  }
+  console.log("🔄 Auth error handling flags reset");
+}
+
+// Enhanced API request function with better auth error handling
 export async function apiRequest(method, url, data = null, options = {}) {
+  // Check if we're already handling an auth error - if so, don't make the request
+  if (isHandlingAuthError) {
+    console.log("🚫 Blocking API request - auth error being handled");
+    throw new Error("Authentication error being handled. Please log in again.");
+  }
+
   // Merge default config with custom options
   const config = {
     method,
@@ -82,14 +163,20 @@ export async function apiRequest(method, url, data = null, options = {}) {
     credentials: config.credentials,
     origin: window.location.origin,
     hasData: !!data,
+    isSafari: safariUtils.isSafari(),
+    isHandlingAuthError,
   });
 
   try {
-    const response = await fetch(fullUrl, config);
+    // Use Safari-compatible fetch if Safari is detected
+    const response = safariUtils.isSafari()
+      ? await safariUtils.safariFetch(fullUrl, config)
+      : await fetch(fullUrl, config);
 
     console.log(`✅ API Response: ${response.status} ${response.statusText}`, {
       url: fullUrl,
       hasCookies: !!document.cookie,
+      isSafari: safariUtils.isSafari(),
     });
 
     // Handle different response types
@@ -119,6 +206,7 @@ export async function apiRequest(method, url, data = null, options = {}) {
         status: response.status,
         responseData,
         origin: window.location.origin,
+        isSafari: safariUtils.isSafari(),
       });
 
       // Create detailed error message
@@ -127,7 +215,18 @@ export async function apiRequest(method, url, data = null, options = {}) {
         responseData?.error ||
         `HTTP ${response.status}: ${response.statusText}`;
 
-      throw new ApiError(errorMessage, response.status, responseData);
+      const apiError = new ApiError(
+        errorMessage,
+        response.status,
+        responseData
+      );
+
+      // Handle auth errors immediately to prevent recursive calls
+      if (response.status === 401 || response.status === 403) {
+        handleAuthError(apiError);
+      }
+
+      throw apiError;
     }
 
     // Return the response object with additional methods for flexibility
@@ -147,6 +246,8 @@ export async function apiRequest(method, url, data = null, options = {}) {
       error: error.message,
       type: error.name,
       origin: window.location.origin,
+      isSafari: safariUtils.isSafari(),
+      isHandlingAuthError,
     });
 
     // Handle network errors and other fetch failures
@@ -290,54 +391,6 @@ export const authApi = {
     return api.get("/api/auth/me");
   },
 };
-
-// Enhanced utility function to handle authentication errors globally
-let isHandlingAuthError = false;
-
-export function handleAuthError(error) {
-  // Prevent recursive calls if we're already handling an auth error
-  if (isHandlingAuthError) {
-    console.log("Auth error already being handled, skipping...");
-    return;
-  }
-
-  console.error("🔒 Authentication error:", {
-    status: error.status,
-    message: error.message,
-    origin: window.location.origin,
-  });
-
-  if (error.status === 401 || error.status === 403) {
-    // Set flag to prevent recursive calls
-    isHandlingAuthError = true;
-
-    // Clear any stored auth data
-    localStorage.removeItem("google_id_token");
-    localStorage.removeItem("google_access_token");
-    localStorage.removeItem("google_user_info");
-
-    // Clear all React Query cache
-    queryClient.clear();
-
-    // Show user-friendly message
-    console.warn("Session expired. Please log in again.");
-
-    // Redirect to login or show login modal
-    // You might want to use your router instead of window.location
-    if (window.location.pathname !== "/login") {
-      // Use setTimeout to ensure all state updates are processed before redirect
-      setTimeout(() => {
-        window.location.href = "/login";
-      }, 100);
-    }
-  }
-}
-
-// Utility function to reset auth error handling flags
-export function resetAuthErrorHandling() {
-  isHandlingAuthError = false;
-  console.log("Auth error handling flags reset");
-}
 
 // Debug utility to check current session status
 export const debugSession = async () => {

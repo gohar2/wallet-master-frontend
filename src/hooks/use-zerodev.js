@@ -6,29 +6,37 @@ export function useZeroDev() {
   const [smartAccount, setSmartAccount] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [authErrorHandled, setAuthErrorHandled] = useState(false);
-  const { user, updateUserWallet } = useAuth();
+  const { user, updateUserWallet, sessionValidated } = useAuth();
   const authErrorRef = useRef(false);
 
   // Auto-reconnect if user has wallet address but smartAccount state is null
   useEffect(() => {
-    // Prevent auto-reconnect if we're handling an auth error
-    if (authErrorRef.current || authErrorHandled) {
+    // Prevent auto-reconnect if we're handling an auth error or session not validated
+    if (authErrorRef.current || authErrorHandled || !sessionValidated) {
       return;
     }
 
     if (user?.walletAddress && !smartAccount && !isConnecting) {
       // User has a wallet address but smartAccount state is not set
       // Reconnect to restore the smart account state
+      console.log(
+        "🔄 Auto-reconnecting to existing wallet:",
+        user.walletAddress
+      );
       setSmartAccount({
         address: user.walletAddress,
         owner: user.googleId,
       });
     }
-  }, [user, smartAccount, isConnecting, authErrorHandled]);
+  }, [user, smartAccount, isConnecting, authErrorHandled, sessionValidated]);
 
   const connect = useCallback(async () => {
     if (!user) {
       throw new Error("User must be authenticated first");
+    }
+
+    if (!sessionValidated) {
+      throw new Error("Session validation required before wallet operations");
     }
 
     // Prevent connection if we're handling an auth error
@@ -40,6 +48,7 @@ export function useZeroDev() {
 
     // If user already has a wallet address, just restore the state
     if (user.walletAddress) {
+      console.log("🔗 Restoring existing wallet:", user.walletAddress);
       setSmartAccount({
         address: user.walletAddress,
         owner: user.googleId,
@@ -47,12 +56,15 @@ export function useZeroDev() {
       return user.walletAddress;
     }
 
+    console.log("🔗 Creating new wallet for user:", user.email);
     setIsConnecting(true);
     try {
       // Create smart wallet using user's Google ID as owner
       const walletAddress = await zeroDevWallet.createSmartAccount(
         user.googleId
       );
+
+      console.log("✅ Wallet created successfully:", walletAddress);
 
       // Update user with wallet address
       await updateUserWallet(walletAddress);
@@ -64,28 +76,32 @@ export function useZeroDev() {
 
       return walletAddress;
     } catch (error) {
-      console.error("Error connecting to ZeroDev:", error);
+      console.error("❌ Error connecting to ZeroDev:", error);
 
       // Check if this is an authentication error
       if (
         error.message.includes("HTTP 401") ||
         error.message.includes("Session expired") ||
-        error.message.includes("Authentication error being handled")
+        error.message.includes("Authentication error being handled") ||
+        error.message.includes("User must be authenticated first")
       ) {
         authErrorRef.current = true;
         setAuthErrorHandled(true);
         console.warn(
-          "Authentication error detected, preventing further wallet operations"
+          "🔒 Authentication error detected, preventing further wallet operations"
         );
+        // Don't throw the error again since it's already being handled
+        return null;
       }
 
       throw error;
     } finally {
       setIsConnecting(false);
     }
-  }, [user, updateUserWallet, authErrorHandled]);
+  }, [user, updateUserWallet, authErrorHandled, sessionValidated]);
 
   const disconnect = useCallback(() => {
+    console.log("🔌 Disconnecting wallet");
     zeroDevWallet.disconnect();
     setSmartAccount(null);
     // Reset auth error flags on disconnect
@@ -95,16 +111,17 @@ export function useZeroDev() {
 
   const sendGaslessTransaction = useCallback(
     async (to, amount) => {
-      // Prevent transaction if we're handling an auth error
-      if (authErrorRef.current || authErrorHandled) {
+      // Prevent transaction if we're handling an auth error or session not validated
+      if (authErrorRef.current || authErrorHandled || !sessionValidated) {
         throw new Error(
-          "Authentication error being handled. Please log in again."
+          "Authentication error being handled or session not validated. Please log in again."
         );
       }
 
       // Ensure we have a smart account before sending transaction
       if (!smartAccount && user?.walletAddress) {
         // Auto-reconnect if needed
+        console.log("🔄 Auto-reconnecting for transaction");
         setSmartAccount({
           address: user.walletAddress,
           owner: user.googleId,
@@ -118,10 +135,12 @@ export function useZeroDev() {
       }
 
       try {
+        console.log("💸 Sending gasless transaction:", { to, amount });
         const txHash = await zeroDevWallet.sendGaslessTransaction(to, amount);
+        console.log("✅ Transaction successful:", txHash);
         return txHash;
       } catch (error) {
-        console.error("Error sending gasless transaction:", error);
+        console.error("❌ Error sending gasless transaction:", error);
 
         // Check if this is an authentication error
         if (
@@ -131,27 +150,30 @@ export function useZeroDev() {
         ) {
           authErrorRef.current = true;
           setAuthErrorHandled(true);
-          console.warn("Authentication error detected during transaction");
+          console.warn("🔒 Authentication error detected during transaction");
+          // Don't throw the error again since it's already being handled
+          return null;
         }
 
         throw error;
       }
     },
-    [smartAccount, user, authErrorHandled]
+    [smartAccount, user, authErrorHandled, sessionValidated]
   );
 
   const sendBatchTransaction = useCallback(
     async (to, amount) => {
-      // Prevent transaction if we're handling an auth error
-      if (authErrorRef.current || authErrorHandled) {
+      // Prevent transaction if we're handling an auth error or session not validated
+      if (authErrorRef.current || authErrorHandled || !sessionValidated) {
         throw new Error(
-          "Authentication error being handled. Please log in again."
+          "Authentication error being handled or session not validated. Please log in again."
         );
       }
 
       // Ensure we have a smart account before sending transaction
       if (!smartAccount && user?.walletAddress) {
         // Auto-reconnect if needed
+        console.log("🔄 Auto-reconnecting for batch transaction");
         setSmartAccount({
           address: user.walletAddress,
           owner: user.googleId,
@@ -165,6 +187,7 @@ export function useZeroDev() {
       }
 
       try {
+        console.log("📦 Sending batch transaction:", { to, amount });
         // Mock batch operations - approve + transfer
         const operations = [
           {
@@ -178,9 +201,10 @@ export function useZeroDev() {
         ];
 
         const txHash = await zeroDevWallet.sendBatchTransaction(operations);
+        console.log("✅ Batch transaction successful:", txHash);
         return txHash;
       } catch (error) {
-        console.error("Error sending batch transaction:", error);
+        console.error("❌ Error sending batch transaction:", error);
 
         // Check if this is an authentication error
         if (
@@ -191,14 +215,16 @@ export function useZeroDev() {
           authErrorRef.current = true;
           setAuthErrorHandled(true);
           console.warn(
-            "Authentication error detected during batch transaction"
+            "🔒 Authentication error detected during batch transaction"
           );
+          // Don't throw the error again since it's already being handled
+          return null;
         }
 
         throw error;
       }
     },
-    [smartAccount, user, authErrorHandled]
+    [smartAccount, user, authErrorHandled, sessionValidated]
   );
 
   return {

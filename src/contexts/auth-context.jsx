@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import { apiRequest, resetAuthErrorHandling } from "@/lib/queryClient";
 import { googleAuth } from "@/lib/google-auth";
+import { safariUtils } from "@/lib/safari-compatibility";
 
 const AuthContext = createContext(undefined);
 
@@ -16,42 +17,111 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isHandlingAuthError, setIsHandlingAuthError] = useState(false);
+  const [sessionValidated, setSessionValidated] = useState(false);
   const authErrorHandledRef = useRef(false);
 
   useEffect(() => {
-    // Check for existing auth state in localStorage
-    const savedUser = localStorage.getItem("user");
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch (error) {
-        console.error("Error parsing saved user:", error);
-        localStorage.removeItem("user");
-      }
+    // Safari debug info on mount
+    if (safariUtils.isSafari()) {
+      safariUtils.debug();
     }
 
-    // Validate cookie-based session with the server
+    // Validate cookie-based session with the server FIRST
     (async () => {
       try {
+        console.log("🔍 Validating session with server...");
         const response = await apiRequest("GET", "/api/auth/validate");
         const data = response.data;
+
         if (data?.user) {
+          console.log(
+            "✅ Session validated, user authenticated:",
+            data.user.email
+          );
           setUser(data.user);
-          localStorage.setItem("user", JSON.stringify(data.user));
+          safariUtils.safeLocalStorage.setItem(
+            "user",
+            JSON.stringify(data.user)
+          );
+          setSessionValidated(true);
         } else {
+          console.log("❌ Session validation failed - no user data");
           setUser(null);
-          localStorage.removeItem("user");
+          safariUtils.safeLocalStorage.removeItem("user");
+          setSessionValidated(true);
         }
       } catch (e) {
-        // Network or 401/403 cause apiRequest to throw
+        console.warn("❌ Session validation failed:", e);
+
+        // Clear any stale user data from localStorage
         setUser(null);
-        localStorage.removeItem("user");
-        console.warn("Auth validate failed:", e);
+        safariUtils.safeLocalStorage.removeItem("user");
+        setSessionValidated(true);
+
+        // If it's a 401/403 error, we're already handling it
+        if (e.status === 401 || e.status === 403) {
+          console.log("🔄 Auth error already being handled by global handler");
+        }
       } finally {
         setIsLoading(false);
       }
     })();
   }, []);
+
+  // Function to validate session manually
+  const validateSession = async () => {
+    if (!user) return false;
+
+    // Prevent recursive calls if we're already handling an auth error
+    if (isHandlingAuthError || authErrorHandledRef.current) {
+      return false;
+    }
+
+    try {
+      console.log("🔍 Manually validating session...");
+      const response = await apiRequest("GET", "/api/auth/validate");
+      const data = response.data;
+
+      if (data?.user) {
+        console.log("✅ Session is valid");
+        // Update user data if it changed
+        if (JSON.stringify(data.user) !== JSON.stringify(user)) {
+          setUser(data.user);
+          safariUtils.safeLocalStorage.setItem(
+            "user",
+            JSON.stringify(data.user)
+          );
+        }
+        return true;
+      } else {
+        console.log("❌ Session validation failed - no user data");
+        setUser(null);
+        safariUtils.safeLocalStorage.removeItem("user");
+        return false;
+      }
+    } catch (error) {
+      console.warn("❌ Session validation failed:", error);
+
+      // Clear user data on validation failure
+      setUser(null);
+      safariUtils.safeLocalStorage.removeItem("user");
+
+      // If validation fails, clear user data
+      if (error.status === 401 || error.status === 403) {
+        await logout();
+      }
+      return false;
+    }
+  };
+
+  // Enhanced user getter that ensures session is validated
+  const getValidatedUser = () => {
+    // If session hasn't been validated yet, return null
+    if (!sessionValidated) {
+      return null;
+    }
+    return user;
+  };
 
   const login = async (accessToken, idToken) => {
     setIsLoading(true);
@@ -79,7 +149,8 @@ export function AuthProvider({ children }) {
 
       const userData = response.data;
       setUser(userData);
-      localStorage.setItem("user", JSON.stringify(userData));
+      setSessionValidated(true);
+      safariUtils.safeLocalStorage.setItem("user", JSON.stringify(userData));
       return userData;
     } catch (error) {
       console.error("Login error:", error);
@@ -219,7 +290,7 @@ export function AuthProvider({ children }) {
 
       const updatedUser = response.data;
       setUser(updatedUser);
-      localStorage.setItem("user", JSON.stringify(updatedUser));
+      safariUtils.safeLocalStorage.setItem("user", JSON.stringify(updatedUser));
       return updatedUser;
     } catch (error) {
       console.error("Update wallet error:", error);
@@ -236,17 +307,17 @@ export function AuthProvider({ children }) {
 
         // Clear user data and redirect to login
         setUser(null);
-        localStorage.removeItem("user");
+        safariUtils.safeLocalStorage.removeItem("user");
 
         // Show user-friendly message and redirect
         console.warn("Session expired. Redirecting to login...");
 
-        // Use setTimeout to ensure state updates are processed before redirect
+        // Use Safari-compatible redirect with immediate effect
         setTimeout(() => {
           if (window.location.pathname !== "/login") {
-            window.location.href = "/login";
+            localStorage.clear();
           }
-        }, 100);
+        }, 50); // Reduced timeout for faster response
 
         throw new Error("Session expired. Please log in again.");
       } else if (error.message.includes("HTTP 403")) {
@@ -258,29 +329,13 @@ export function AuthProvider({ children }) {
         throw new Error(
           "Connection error. Please check your internet and try again."
         );
+      } else if (error.message.includes("Authentication error being handled")) {
+        // Don't throw another error if we're already handling auth
+        console.log("Auth error already being handled, skipping wallet update");
+        return null;
       } else {
         throw new Error("Failed to update wallet. Please try again.");
       }
-    }
-  };
-
-  // Check if user session is still valid
-  const validateSession = async () => {
-    if (!user) return false;
-
-    // Prevent recursive calls if we're already handling an auth error
-    if (isHandlingAuthError || authErrorHandledRef.current) {
-      return false;
-    }
-
-    try {
-      await apiRequest("GET", "/api/auth/validate");
-      return true;
-    } catch (error) {
-      console.warn("Session validation failed:", error);
-      // If validation fails, clear user data
-      await logout();
-      return false;
     }
   };
 
@@ -297,7 +352,7 @@ export function AuthProvider({ children }) {
       const response = await apiRequest("GET", `/api/auth/me`);
       const updatedUser = response.data;
       setUser(updatedUser);
-      localStorage.setItem("user", JSON.stringify(updatedUser));
+      safariUtils.safeLocalStorage.setItem("user", JSON.stringify(updatedUser));
       return updatedUser;
     } catch (error) {
       console.error("Failed to refresh user data:", error);
@@ -306,6 +361,10 @@ export function AuthProvider({ children }) {
         setIsHandlingAuthError(true);
         authErrorHandledRef.current = true;
         await logout();
+      } else if (error.message.includes("Authentication error being handled")) {
+        // Don't throw another error if we're already handling auth
+        console.log("Auth error already being handled, skipping user refresh");
+        return null;
       }
       throw error;
     }
@@ -326,24 +385,21 @@ export function AuthProvider({ children }) {
     }
 
     setUser(null);
+    setSessionValidated(true);
     setIsHandlingAuthError(false);
     authErrorHandledRef.current = false;
-    try {
-      localStorage.clear();
-    } catch (e) {
-      console.warn("localStorage.clear failed:", e);
-    }
 
-    // Optional: Redirect to home page after logout
-    // window.location.href = '/';
+    // Use Safari-compatible storage clearing
+    safariUtils.safeLocalStorage.clear();
   };
 
   return (
     <AuthContext.Provider
       value={{
-        user,
+        user: getValidatedUser(), // Use validated user getter
         isLoading,
-        isAuthenticated: !!user,
+        isAuthenticated: !!getValidatedUser(),
+        sessionValidated, // Expose session validation status
         login,
         logout,
         updateUserWallet,

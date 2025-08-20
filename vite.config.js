@@ -1,4 +1,4 @@
-// vite.config.js - Fixed for both localhost and 127.0.0.1
+// vite.config.js - Fixed for both localhost and 127.0.0.1 with Safari compatibility
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
@@ -13,10 +13,21 @@ export default defineConfig(({ mode }) => {
         "@": path.resolve(__dirname, "./src"),
       },
     },
+    optimizeDeps: {
+      // Exclude Google GSI client from dependency optimization
+      exclude: ["https://accounts.google.com/gsi/client"],
+    },
     server: {
       port: 5173,
       host: true, // Allow access from both localhost and 127.0.0.1
       // Remove the specific host constraint that was causing issues
+
+      // Add Safari-specific headers
+      headers: {
+        "Cross-Origin-Embedder-Policy": "unsafe-none",
+        "Cross-Origin-Opener-Policy": "unsafe-none",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+      },
 
       // Proxy API calls during development to avoid CORS
       proxy: {
@@ -28,6 +39,11 @@ export default defineConfig(({ mode }) => {
           headers: {
             // Ensure proper headers are forwarded
             "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods":
+              "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+            "Access-Control-Allow-Headers":
+              "Content-Type, Authorization, X-Requested-With",
           },
           configure: (proxy, options) => {
             proxy.on("error", (err, req, res) => {
@@ -41,11 +57,22 @@ export default defineConfig(({ mode }) => {
               if (req.headers.cookie) {
                 proxyReq.setHeader("cookie", req.headers.cookie);
               }
+              // Add Safari-specific headers
+              proxyReq.setHeader("Cache-Control", "no-cache");
+              proxyReq.setHeader("Pragma", "no-cache");
             });
             proxy.on("proxyRes", (proxyRes, req, res) => {
               console.log(
                 `Proxy response: ${proxyRes.statusCode} for ${req.url}`
               );
+              // Add Safari-specific response headers
+              proxyRes.headers["Access-Control-Allow-Credentials"] = "true";
+              proxyRes.headers["Access-Control-Allow-Origin"] =
+                req.headers.origin || "*";
+              proxyRes.headers["Cache-Control"] =
+                "no-cache, no-store, must-revalidate";
+              proxyRes.headers["Pragma"] = "no-cache";
+              proxyRes.headers["Expires"] = "0";
             });
           },
         },
@@ -55,17 +82,36 @@ export default defineConfig(({ mode }) => {
       outDir: "dist",
       sourcemap: mode !== "production",
       rollupOptions: {
+        external: [
+          // External dependencies that should not be bundled
+          // These are loaded via script tags in index.html
+        ],
         output: {
+          // Safari-specific optimizations
           manualChunks: {
             vendor: ["react", "react-dom"],
+            // Remove google chunk - it's loaded via script tag
           },
+        },
+        // Tell Rollup to ignore Google GSI client references
+        onwarn(warning, warn) {
+          // Ignore warnings about external modules
+          if (
+            warning.code === "UNRESOLVED_IMPORT" &&
+            warning.source &&
+            warning.source.includes("google")
+          ) {
+            return;
+          }
+          warn(warning);
         },
       },
     },
     define: {
-      __API_URL__: JSON.stringify(process.env.VITE_API_URL),
-      __NODE_ENV__: JSON.stringify(mode),
+      // Add Safari detection for build-time optimizations
+      __SAFARI_COMPAT__: JSON.stringify(true),
+      // Define Google GSI client as global to prevent bundling issues
+      "window.google": "window.google",
     },
-    envPrefix: "VITE_",
   };
 });

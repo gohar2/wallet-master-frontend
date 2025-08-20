@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Send } from "lucide-react";
-import { useWeb3 } from "@/contexts/web3-context";
+import { useZeroDev } from "@/hooks/use-zerodev"; // Changed from useWeb3 to useZeroDev
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,7 +17,14 @@ export function TokenTransferCard() {
     amount: "",
   });
 
-  const { sendGaslessTransaction, isConnected } = useWeb3();
+  // Use the fixed useZeroDev hook instead of useWeb3
+  const {
+    sendGaslessTransaction,
+    isConnected,
+    isConnecting,
+    smartAccount,
+    getCurrentSmartAccount,
+  } = useZeroDev();
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -25,10 +32,19 @@ export function TokenTransferCard() {
   const transferMutation = useMutation({
     mutationFn: async (data) => {
       if (!user) throw new Error("User not authenticated");
-      if (!isConnected)
+
+      // Check for smart account more reliably
+      const currentSmartAccount = getCurrentSmartAccount();
+      if (!currentSmartAccount) {
         throw new Error(
-          "Smart account not connected. Please wait for wallet creation to complete."
+          "Smart account not available. Please wait for wallet creation to complete."
         );
+      }
+
+      console.log(
+        "🚀 Starting transfer with smart account:",
+        currentSmartAccount
+      );
 
       // Create transaction record
       const transactionResponse = await apiRequest(
@@ -45,27 +61,40 @@ export function TokenTransferCard() {
 
       const transaction = transactionResponse.data;
 
+      // Check if transaction was created successfully
+      if (!transaction || !transaction._id) {
+        throw new Error("Failed to create transaction record");
+      }
+
       try {
+        console.log("💸 Sending gasless transaction...");
         // Send gasless transaction
         const txHash = await sendGaslessTransaction(
           data.recipient,
           data.amount
         );
 
+        if (!txHash) {
+          throw new Error("Transaction failed - no hash returned");
+        }
+
         // Update transaction with success
-        await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
-          status: "success",
+        await apiRequest("PATCH", `/api/transactions/${transaction._id}`, {
+          status: "completed",
           hash: txHash,
         });
 
         return { transaction, txHash };
       } catch (error) {
+        console.error("❌ Transaction failed:", error);
         // Update transaction with failure
-        await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
-          status: "failed",
-          errorMessage:
-            error instanceof Error ? error.message : "Transaction failed",
-        });
+        if (transaction && transaction._id) {
+          await apiRequest("PATCH", `/api/transactions/${transaction._id}`, {
+            status: "failed",
+            error:
+              error instanceof Error ? error.message : "Transaction failed",
+          });
+        }
         throw error;
       }
     },
@@ -80,6 +109,7 @@ export function TokenTransferCard() {
       });
     },
     onError: (error) => {
+      console.error("🚨 Transfer mutation error:", error);
       toast({
         title: "Transfer failed",
         description:
@@ -101,14 +131,25 @@ export function TokenTransferCard() {
       return;
     }
 
-    if (!isConnected) {
+    // More reliable connection check
+    const currentSmartAccount = getCurrentSmartAccount();
+    if (!currentSmartAccount && !isConnecting) {
       toast({
         title: "Wallet not ready",
-        description: "Please wait for your smart wallet to be created.",
+        description:
+          "Please wait for your smart wallet to be created or try refreshing.",
         variant: "destructive",
       });
       return;
     }
+
+    console.log("📋 Form submitted with data:", formData);
+    console.log("🔗 Smart account status:", {
+      isConnected,
+      isConnecting,
+      smartAccount,
+      currentSmartAccount,
+    });
 
     transferMutation.mutate(formData);
   };
@@ -116,6 +157,15 @@ export function TokenTransferCard() {
   const handleInputChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
+
+  // More sophisticated connection status
+  const getConnectionStatus = () => {
+    if (isConnecting) return "connecting";
+    if (getCurrentSmartAccount()) return "connected";
+    return "disconnected";
+  };
+
+  const connectionStatus = getConnectionStatus();
 
   return (
     <Card className="shadow-card">
@@ -130,6 +180,13 @@ export function TokenTransferCard() {
             </h3>
             <p className="text-sm text-gray-600">
               Send USDC without paying gas fees
+            </p>
+            {/* Debug info - remove in production */}
+            <p className="text-xs text-gray-400 mt-1">
+              Status: {connectionStatus} | Wallet:{" "}
+              {getCurrentSmartAccount()?.address
+                ? `${getCurrentSmartAccount().address.slice(0, 6)}...`
+                : "None"}
             </p>
           </div>
         </div>
@@ -179,7 +236,9 @@ export function TokenTransferCard() {
 
           <Button
             type="submit"
-            disabled={transferMutation.isPending || !isConnected}
+            disabled={
+              transferMutation.isPending || connectionStatus === "disconnected"
+            }
             className="w-full bg-primary hover:bg-primary-dark text-white font-medium"
           >
             {transferMutation.isPending ? (
@@ -187,8 +246,13 @@ export function TokenTransferCard() {
                 <LoadingSpinner className="mr-2" size="sm" />
                 Sending Transfer...
               </>
-            ) : !isConnected ? (
-              "Connecting Wallet..."
+            ) : connectionStatus === "connecting" ? (
+              <>
+                <LoadingSpinner className="mr-2" size="sm" />
+                Connecting Wallet...
+              </>
+            ) : connectionStatus === "disconnected" ? (
+              "Wallet Not Connected"
             ) : (
               "Send Transfer"
             )}

@@ -53,24 +53,33 @@ export function BatchedActionsCard() {
 
       const transaction = transactionResponse.data;
 
+      // Check if transaction was created successfully
+      if (!transaction || !transaction._id) {
+        throw new Error("Failed to create transaction record");
+      }
+
       try {
         // Send batch transaction
         const txHash = await sendBatchTransaction(data.recipient, data.amount);
 
         // Update transaction with success
-        await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
-          status: "success",
+        await apiRequest("PATCH", `/api/transactions/${transaction._id}`, {
+          status: "completed",
           hash: txHash,
         });
 
         return { transaction, txHash };
       } catch (error) {
         // Update transaction with failure
-        await apiRequest("PATCH", `/api/transactions/${transaction.id}`, {
-          status: "failed",
-          errorMessage:
-            error instanceof Error ? error.message : "Batch transaction failed",
-        });
+        if (transaction && transaction._id) {
+          await apiRequest("PATCH", `/api/transactions/${transaction._id}`, {
+            status: "failed",
+            error:
+              error instanceof Error
+                ? error.message
+                : "Batch transaction failed",
+          });
+        }
         throw error;
       }
     },
